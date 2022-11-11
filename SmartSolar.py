@@ -5,19 +5,12 @@ import argparse
 import time
 import threading
 import signal
-import datetime
 import io
 
 import gatt.gatt_linux as gatt
 import cbor2
-
-
-parser = argparse.ArgumentParser(
-    prog="SmartSolar",
-    description="Connects to Victron Energy Smart Solar devices via BLE",
-)
-parser.add_argument("--mac", help="Mac Address of the device to connect to", default="ee:be:95:b5:67:53")
-parser.add_argument("-v", "--verbose", help="increase output verbosity", action="count", default=0)
+import dbus
+import dbus.service
 
 
 def volts(data): return int.from_bytes(data, byteorder='little') * 0.01
@@ -25,7 +18,7 @@ def amps(data): return int.from_bytes(data, byteorder='little') * 0.1
 def kelvin(data): return int.from_bytes(data, byteorder='little') * 0.01
 
 
-class SmartSolar(gatt.Device):
+class VictronDevice(gatt.Device):
     GATT_SERVICE = "306b0001-b081-4037-83dc-e59fcc3cdfd0"
 
     GATT_CHAR0021 = "306b0002-b081-4037-83dc-e59fcc3cdfd0"
@@ -41,6 +34,8 @@ class SmartSolar(gatt.Device):
         self.gatt_char0027: gatt.Characteristic = None
 
         self.gatt_chars_notify = 0
+
+        device = self
 
         class Values(dict):
             def __setitem__(self, key, value):
@@ -61,6 +56,8 @@ class SmartSolar(gatt.Device):
             self.values["Adjustable voltage maximum (V)"] = volts(data)
         elif vreg == bytes.fromhex("ec5a"):
             self.values["Uptime (s)"] = int.from_bytes(data, byteorder='little')
+        elif vreg == bytes.fromhex("edad"):
+            self.values["Load output actual current"] = amps(data)
         elif vreg == bytes.fromhex("ed8f"):
             self.values["Channel 1 current (A)"] = amps(data)
         elif vreg == bytes.fromhex("eda8"):
@@ -85,6 +82,9 @@ class SmartSolar(gatt.Device):
             bytes.fromhex("ec88"),
             bytes.fromhex("0202"),
             bytes.fromhex("010e"),
+            bytes.fromhex("9041"),
+            bytes.fromhex("0150"),
+            bytes.fromhex("ec89"),
         ]:
             logging.info("[%s] VREG %s ignored: %s", self.mac_address, vreg.hex(), data.hex() if isinstance(data, bytes) else data)
         else:
@@ -106,20 +106,20 @@ class SmartSolar(gatt.Device):
                 logging.debug("[%s]  char %s", self.mac_address, char.uuid)
 
         # get ATT service
-        self.gatt_service = [s for s in self.services if s.uuid == SmartSolar.GATT_SERVICE][0]
+        self.gatt_service = [s for s in self.services if s.uuid == VictronDevice.GATT_SERVICE][0]
         logging.info("[%s] got gatt service %s", self.mac_address, self.gatt_service.uuid)
 
         # get ATT write char
-        self.gatt_char0021 = [c for c in self.gatt_service.characteristics if c.uuid == SmartSolar.GATT_CHAR0021][0]
+        self.gatt_char0021 = [c for c in self.gatt_service.characteristics if c.uuid == VictronDevice.GATT_CHAR0021][0]
         self.gatt_char0021.enable_notifications()
-        self.gatt_char0024 = [c for c in self.gatt_service.characteristics if c.uuid == SmartSolar.GATT_CHAR0024][0]
+        self.gatt_char0024 = [c for c in self.gatt_service.characteristics if c.uuid == VictronDevice.GATT_CHAR0024][0]
         self.gatt_char0024.enable_notifications()
-        self.gatt_char0027 = [c for c in self.gatt_service.characteristics if c.uuid == SmartSolar.GATT_CHAR0027][0]
+        self.gatt_char0027 = [c for c in self.gatt_service.characteristics if c.uuid == VictronDevice.GATT_CHAR0027][0]
         self.gatt_char0027.enable_notifications()
-        logging.info("[%s] got chars", device.mac_address)
+        logging.info("[%s] got chars", self.mac_address)
 
     def write_init(self):
-        logging.info("[%s] Writing init sequence", device.mac_address)
+        logging.info("[%s] Writing init sequence", self.mac_address)
         # self.gatt_char0021.write_value(bytes.fromhex('fa80ff'))
         # self.gatt_char0021.write_value(bytes.fromhex('f980'))
         # self.gatt_char0024.write_value(bytes.fromhex('01'))
@@ -132,6 +132,7 @@ class SmartSolar(gatt.Device):
         # self.gatt_char0024.write_value(bytes.fromhex('0600821893421027'))
         # self.gatt_char0021.write_value(bytes.fromhex('f941'))
 
+        # BT-Trace
         self.gatt_char0021.write_value(bytes.fromhex('fa80ff'))
         self.gatt_char0021.write_value(bytes.fromhex('f980'))
         # 0x0021 < f901 (ack)
@@ -144,20 +145,20 @@ class SmartSolar(gatt.Device):
         # 0x0021 < f901 (ack)
         # < 1 Value
 
-        self.gatt_char0024.write_value(bytes.fromhex('060082189342102705008219ec6619ec6503010303'))
+        self.gatt_char0024.write_value(bytes.fromhex('0600821893421027'+'05008219ec6619ec65'+'03010303'))
         # 0x0021< f901 (ack)
         # < 5 Values
 
-        self.gatt_char0024.write_value(bytes.fromhex('05008119010d05008119ec7d050081189005008119ec3f05008119ec12'))
+        self.gatt_char0024.write_value(bytes.fromhex('05008119010d'+'05008119ec7d'+'0500811890'+'05008119ec3f'+'05008119ec12'))
         # 0x0021 < f901 (ack)
         # < 5 Values
 
-        self.gatt_char0024.write_value(bytes.fromhex('050181190100050181190100'))
+        self.gatt_char0024.write_value(bytes.fromhex('050181190100'+'050181190100'))
         # 0x0021 < f901 (ack)
         # < 5 Values
 
         self.gatt_char0027.write_value(bytes.fromhex(
-            '05018119ec7d050181189005018119ec3f05018119ec1205038119010205038119ed8c05038119edec05038119221105038119221205038119eda8060082189342102705038119eda905'))
+            '05018119ec7d'+'0501811890'+'05018119ec3f'+'05018119ec12'+'050381190102'+'05038119ed8c'+'05038119edec'+'050381192211'+'050381192212'+'05038119eda8'+'0600821893421027'+'05038119eda905'))
         self.gatt_char0024.write_value(bytes.fromhex(
             '038119edac'))  # '0503811910500503811910a00503811910510503811910a10503811910520503811910a20503811910530503811910a30503811910540503811910a4050381191055050381'))
         # self.gatt_char0024.write_value(bytes.fromhex(
@@ -251,16 +252,16 @@ class SmartSolar(gatt.Device):
         self.gatt_char0021.write_value(bytes.fromhex('f941'))
 
     def write_ping(self):
-        logging.info("[%s] Writing ping", device.mac_address)
-        self.gatt_char0024.write_value(bytes.fromhex('0300'))
-        self.gatt_char0021.write_value(bytes.fromhex('f941'))
+        logging.info("[%s] Writing ping", self.mac_address)
+        self.gatt_char0024.write_value(bytes.fromhex('0600821893421027'))
+        # self.gatt_char0021.write_value(bytes.fromhex('f941'))
 
     def connect_failed(self, error):
         logging.warning("[%s] connect failed: %s", self.mac_address, error)
         return super().connect_failed(error)
 
     def characteristic_value_updated(self, characteristic: gatt.Characteristic, value):
-        logging.info("[%s] char %s value updated: %s", self.mac_address, characteristic.uuid, value.hex())
+        logging.debug("[%s] char %s value updated: %s", self.mac_address, characteristic.uuid, value.hex())
         fp = io.BytesIO(value)
         key = fp.read(3)
         while len(key):
@@ -284,7 +285,7 @@ class SmartSolar(gatt.Device):
 
             elif key == b"\xf9\x01":
                 self.ack += 1
-                logging.info("[%s] ack %s", self.mac_address, self.ack)
+                logging.debug("[%s] ack %s", self.mac_address, self.ack)
                 # if self.ack == 7:
                 #     self.write_ping()
             else:
@@ -315,8 +316,50 @@ class SmartSolar(gatt.Device):
     def disconnect_succeeded(self):
         return super().disconnect_succeeded()
 
+    def pair(self):
+        if not self._properties.Get("org.bluez.Device1", "Trusted"):
+            logging.debug("[%s] Trusting device...", self.mac_address)
+            self._properties.Set("org.bluez.Device1", "Trusted", True)
+
+        logging.debug("[%s] Attempting to pair...", self.mac_address)
+        # Pair does not seem to get a reply, hence we dismiss the reply / error, and wait for pairing
+        sem = threading.Semaphore(0)
+        self._object.Pair(
+            reply_handler=lambda *args: sem.release(),
+            error_handler=lambda *args: sem.release(),
+        )
+        sem.acquire()
+
+        paired = self._properties.Get('org.bluez.Device1', 'Paired')
+        logging.debug("[%s] Paired: %s", self.mac_address, paired)
+
+        return bool(paired)
+
+
+class VictronEnergyPasskeyAgent(dbus.service.Object):
+    AGENT_INTERFACE = 'org.bluez.Agent1'
+
+    def __init__(self, bus, path="/victronenergy/agent", passkey="000000", **kwargs):
+        super().__init__(bus, path)
+        self.passkey = passkey
+
+        bluez = manager._bus.get_object('org.bluez', "/org/bluez")
+        agent_manager = dbus.Interface(bluez, "org.bluez.AgentManager1")
+        agent_manager.RegisterAgent(path, "KeyboardDisplay")
+
+    @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
+    def RequestPasskey(self, device):
+        logging.debug("VictronEnergyPasskeyAgent: Request passkey (%s): %s", device, self.passkey)
+        return dbus.UInt32(self.passkey)
+
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog="VictronDevice",
+        description="Connects to the the Victron Energy device of nearest proximity via BLE",
+    )
+    # parser.add_argument("--mac", help="Mac Address of the device to connect to", default="ee:be:95:b5:67:53")
+    parser.add_argument("-v", "--verbose", help="increase output verbosity", action="count", default=0)
     args = parser.parse_args()
 
     # configure logging
@@ -340,14 +383,57 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, terminate)
     signal.signal(signal.SIGTERM, terminate)
 
-    # connect to device
-    device = SmartSolar(args.mac, manager, managed=True)
-    logging.info("[%s] connecting", device.mac_address)
-    device.connect()
+    manager.start_discovery(service_uuids=[])
+    time.sleep(5)
 
-    while running and device.is_connected():
+    devices = []
+
+    for d in list(manager.devices()):
+        # filter out non VE-devices based on the ManufacturerData value
+        try:
+            manufacturerData = d._properties.Get('org.bluez.Device1', 'ManufacturerData')
+            if 0x2e1 not in manufacturerData:
+                continue
+
+            # add device
+            logging.info("[%s] Discovered VictronEnergy device \"%s\", RSSI: %s", d.mac_address, d.alias(), d._properties.Get('org.bluez.Device1', "RSSI"))
+            devices.append(d)
+
+            # print debug info
+            data = d._properties.GetAll('org.bluez.Device1')
+            for key, value in data.items():
+                logging.debug("[%s]  %s: %s", d.mac_address, key, value)
+
+        except dbus.exceptions.DBusException:
+            continue
+
+    d: gatt.Device = max(devices, key=lambda d: d._properties.Get('org.bluez.Device1', "RSSI"))
+    logging.info("[%s] Selected nearest device \"%s\"", d.mac_address, d.alias())
+    d = VictronDevice(d.mac_address, manager, managed=True)
+
+    # pair if not paired yet
+    if not d._properties.Get('org.bluez.Device1', "Paired"):
+        # register pairing agent
+        logging.info("Creating VictronEnergy pairing agent")
+        agent = VictronEnergyPasskeyAgent(manager._bus, passkey="000000")
+
+        if not d.pair():
+            logging.error("[%s] Pairing failed, exiting.", d.mac_address)
+            manager.stop_discovery()
+            manager._main_loop.quit()
+            manager_t.join()
+            exit(1)
+        else:
+            logging.info("[%s] Pairing successful!", d.mac_address)
+
+    logging.info("[%s] connecting", d.mac_address)
+    d.connect()
+
+    while running and d.is_connected():
         logging.debug("Running...")
         time.sleep(1)
 
+    manager.stop_discovery()
     manager._main_loop.quit()
+    manager_t.join()
     logging.info("Program finished.")
