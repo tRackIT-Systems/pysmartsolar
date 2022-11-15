@@ -18,7 +18,7 @@ def amps(data): return int.from_bytes(data, byteorder='little') * 0.1
 def kelvin(data): return int.from_bytes(data, byteorder='little') * 0.01
 
 
-class VictronDevice(gatt.Device):
+class VEDevice(gatt.Device):
     GATT_SERVICE = "306b0001-b081-4037-83dc-e59fcc3cdfd0"
 
     GATT_CHAR0021 = "306b0002-b081-4037-83dc-e59fcc3cdfd0"
@@ -106,15 +106,15 @@ class VictronDevice(gatt.Device):
                 logging.debug("[%s]  char %s", self.mac_address, char.uuid)
 
         # get ATT service
-        self.gatt_service = [s for s in self.services if s.uuid == VictronDevice.GATT_SERVICE][0]
+        self.gatt_service = [s for s in self.services if s.uuid == VEDevice.GATT_SERVICE][0]
         logging.info("[%s] got gatt service %s", self.mac_address, self.gatt_service.uuid)
 
         # get ATT write char
-        self.gatt_char0021 = [c for c in self.gatt_service.characteristics if c.uuid == VictronDevice.GATT_CHAR0021][0]
+        self.gatt_char0021 = [c for c in self.gatt_service.characteristics if c.uuid == VEDevice.GATT_CHAR0021][0]
         self.gatt_char0021.enable_notifications()
-        self.gatt_char0024 = [c for c in self.gatt_service.characteristics if c.uuid == VictronDevice.GATT_CHAR0024][0]
+        self.gatt_char0024 = [c for c in self.gatt_service.characteristics if c.uuid == VEDevice.GATT_CHAR0024][0]
         self.gatt_char0024.enable_notifications()
-        self.gatt_char0027 = [c for c in self.gatt_service.characteristics if c.uuid == VictronDevice.GATT_CHAR0027][0]
+        self.gatt_char0027 = [c for c in self.gatt_service.characteristics if c.uuid == VEDevice.GATT_CHAR0027][0]
         self.gatt_char0027.enable_notifications()
         logging.info("[%s] got chars", self.mac_address)
 
@@ -277,7 +277,6 @@ class VictronDevice(gatt.Device):
                     self.update(vreg, data)
 
                     if vreg == bytes.fromhex('010e') and data == bytes.fromhex('00'):
-                        print(self.values)
                         self.disconnect()
 
                 except cbor2.CBORDecodeEOF as error:
@@ -353,12 +352,83 @@ class VictronEnergyPasskeyAgent(dbus.service.Object):
         return dbus.UInt32(self.passkey)
 
 
+class VEDeviceManager(gatt.DeviceManager, threading.Thread):
+    def __init__(self, *args, adapter_name="hci0", **kwargs):
+        gatt.DeviceManager.__init__(self, adapter_name)
+        threading.Thread.__init__(self, *args, **kwargs)
+
+    def stop(self):
+        gatt.DeviceManager.stop(self)
+        self.join()
+
+    def connect_nearest_vedevice(self, delay_s: float = 5.0) -> VEDevice:
+        self.start_discovery(service_uuids=[])
+        time.sleep(delay_s)
+        devices = []
+
+        for d in list(self.devices()):
+            # filter out non VE-devices based on the ManufacturerData value
+            try:
+                manufacturerData = d._properties.Get('org.bluez.Device1', 'ManufacturerData')
+                if 0x2e1 not in manufacturerData:
+                    continue
+
+                # add device
+                logging.info("[%s] Discovered VictronEnergy device \"%s\", RSSI: %s", d.mac_address, d.alias(), d._properties.Get('org.bluez.Device1', "RSSI"))
+                devices.append(d)
+
+                # print debug info
+                data = d._properties.GetAll('org.bluez.Device1')
+                for key, value in data.items():
+                    logging.debug("[%s]  %s: %s", d.mac_address, key, value)
+
+            except dbus.exceptions.DBusException:
+                continue
+
+        d: gatt.Device = max(devices, key=lambda d: d._properties.Get('org.bluez.Device1', "RSSI"))
+        logging.info("[%s] Selected nearest device \"%s\"", d.mac_address, d.alias())
+        d = VEDevice(d.mac_address, self, managed=True)
+
+        # pair if not paired yet
+        if not d._properties.Get('org.bluez.Device1', "Paired"):
+            # register pairing agent
+            logging.info("Creating VictronEnergy pairing agent")
+            agent = VictronEnergyPasskeyAgent(manager._bus, passkey="000000")
+
+            if not d.pair():
+                logging.error("[%s] Pairing failed, rasing RuntimeError.", d.mac_address)
+                raise RuntimeError("Pairing VictronEnergy Device '%s' [%s] failed.", d.alias(), d.mac_address)
+            else:
+                logging.info("[%s] Pairing successful!", d.mac_address)
+
+        logging.info("[%s] connecting", d.mac_address)
+        d.connect()
+
+        return d
+
+
+def read_nearest_vedevice(query_duration_s: float = 15):
+    logging.info("Starting manager")
+    manager = VEDeviceManager()
+    manager.start()
+
+    d = manager.connect_nearest_vedevice()
+
+    timeout = time.time() + query_duration_s
+    while d.is_connected() and time.time() < timeout:
+        time.sleep(1)
+
+    manager.stop_discovery()
+    manager.stop()
+
+    return d.values
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        prog="VictronDevice",
-        description="Connects to the the Victron Energy device of nearest proximity via BLE",
+        prog="smartsolar",
+        description="Connects to the Victron Energy device of nearest proximity via BLE and queries its values",
     )
-    # parser.add_argument("--mac", help="Mac Address of the device to connect to", default="ee:be:95:b5:67:53")
     parser.add_argument("-v", "--verbose", help="increase output verbosity", action="count", default=0)
     args = parser.parse_args()
 
@@ -368,72 +438,6 @@ if __name__ == "__main__":
     logging.debug("Logging level: %s", logging.getLevelName(logging_level))
 
     # create manager
-    logging.info("Starting manager")
-    manager = gatt.DeviceManager(adapter_name="hci0")
-    manager_t = threading.Thread(target=manager.run)
-    manager_t.start()
-    running = True
-
-    # signal handling
-    def terminate(*args):
-        logging.info("Stopping manager")
-        global running
-        running = False
-
-    signal.signal(signal.SIGINT, terminate)
-    signal.signal(signal.SIGTERM, terminate)
-
-    manager.start_discovery(service_uuids=[])
-    time.sleep(5)
-
-    devices = []
-
-    for d in list(manager.devices()):
-        # filter out non VE-devices based on the ManufacturerData value
-        try:
-            manufacturerData = d._properties.Get('org.bluez.Device1', 'ManufacturerData')
-            if 0x2e1 not in manufacturerData:
-                continue
-
-            # add device
-            logging.info("[%s] Discovered VictronEnergy device \"%s\", RSSI: %s", d.mac_address, d.alias(), d._properties.Get('org.bluez.Device1', "RSSI"))
-            devices.append(d)
-
-            # print debug info
-            data = d._properties.GetAll('org.bluez.Device1')
-            for key, value in data.items():
-                logging.debug("[%s]  %s: %s", d.mac_address, key, value)
-
-        except dbus.exceptions.DBusException:
-            continue
-
-    d: gatt.Device = max(devices, key=lambda d: d._properties.Get('org.bluez.Device1', "RSSI"))
-    logging.info("[%s] Selected nearest device \"%s\"", d.mac_address, d.alias())
-    d = VictronDevice(d.mac_address, manager, managed=True)
-
-    # pair if not paired yet
-    if not d._properties.Get('org.bluez.Device1', "Paired"):
-        # register pairing agent
-        logging.info("Creating VictronEnergy pairing agent")
-        agent = VictronEnergyPasskeyAgent(manager._bus, passkey="000000")
-
-        if not d.pair():
-            logging.error("[%s] Pairing failed, exiting.", d.mac_address)
-            manager.stop_discovery()
-            manager._main_loop.quit()
-            manager_t.join()
-            exit(1)
-        else:
-            logging.info("[%s] Pairing successful!", d.mac_address)
-
-    logging.info("[%s] connecting", d.mac_address)
-    d.connect()
-
-    while running and d.is_connected():
-        logging.debug("Running...")
-        time.sleep(1)
-
-    manager.stop_discovery()
-    manager._main_loop.quit()
-    manager_t.join()
+    values = read_nearest_vedevice()
+    print(values)
     logging.info("Program finished.")
