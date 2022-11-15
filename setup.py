@@ -15,7 +15,7 @@ setup(
     description='Query Victron Energy SmartSolar Devices',
     long_description=readme,
     author='Jonas Höchst',
-    author_email='hello@jonashoechst.de',
+    author_email='hoechst@trackit.systems',
     url='https://github.com/trackit-system/smartsolar',
     install_requires=requirements,
     # license=license,

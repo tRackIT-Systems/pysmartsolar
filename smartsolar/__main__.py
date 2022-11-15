@@ -335,20 +335,20 @@ class VEDevice(gatt.Device):
         return bool(paired)
 
 
-class VictronEnergyPasskeyAgent(dbus.service.Object):
+class VEPasskeyAgent(dbus.service.Object):
     AGENT_INTERFACE = 'org.bluez.Agent1'
 
     def __init__(self, bus, path="/victronenergy/agent", passkey="000000", **kwargs):
         super().__init__(bus, path)
         self.passkey = passkey
 
-        bluez = manager._bus.get_object('org.bluez', "/org/bluez")
+        bluez = bus.get_object('org.bluez', "/org/bluez")
         agent_manager = dbus.Interface(bluez, "org.bluez.AgentManager1")
         agent_manager.RegisterAgent(path, "KeyboardDisplay")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
-        logging.debug("VictronEnergyPasskeyAgent: Request passkey (%s): %s", device, self.passkey)
+        logging.debug("VEPasskeyAgent: Request passkey (%s): %s", device, self.passkey)
         return dbus.UInt32(self.passkey)
 
 
@@ -393,7 +393,7 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
         if not d._properties.Get('org.bluez.Device1', "Paired"):
             # register pairing agent
             logging.info("Creating VictronEnergy pairing agent")
-            agent = VictronEnergyPasskeyAgent(manager._bus, passkey="000000")
+            agent = VEPasskeyAgent(self._bus, passkey="000000")
 
             if not d.pair():
                 logging.error("[%s] Pairing failed, rasing RuntimeError.", d.mac_address)
@@ -407,19 +407,22 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
         return d
 
 
-def read_nearest_vedevice(query_duration_s: float = 15):
+def read_nearest_vedevice(connect_duration_s: float = 5.0, query_duration_s: float = 15.0):
     logging.info("Starting manager")
     manager = VEDeviceManager()
     manager.start()
 
-    d = manager.connect_nearest_vedevice()
+    logging.info("Connecting to nearest VEDevice")
+    d = manager.connect_nearest_vedevice(connect_duration_s)
 
+    logging.info("Querying data from %s [%s]", d.alias(), d.mac_address)
     timeout = time.time() + query_duration_s
     while d.is_connected() and time.time() < timeout:
         time.sleep(1)
 
     manager.stop_discovery()
     manager.stop()
+    logging.info("Querying finished.")
 
     return d.values
 
@@ -437,7 +440,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging_level)
     logging.debug("Logging level: %s", logging.getLevelName(logging_level))
 
-    # create manager
+    # read values & print
     values = read_nearest_vedevice()
     print(values)
     logging.info("Program finished.")
