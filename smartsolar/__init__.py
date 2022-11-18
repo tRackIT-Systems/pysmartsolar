@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import logging
-import argparse
 import time
 import threading
 import io
@@ -365,7 +364,7 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
         gatt.DeviceManager.stop(self)
         self.join()
 
-    def connect_nearest_vedevice(self, delay_s: float = 5.0) -> VEDevice:
+    def connect_nearest_vedevice(self, delay_s: float = 5.0, passkey='000000') -> VEDevice:
         self.start_discovery(service_uuids=[])
         time.sleep(delay_s)
         devices = []
@@ -400,7 +399,7 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
         if not d._properties.Get('org.bluez.Device1', "Paired"):
             # register pairing agent
             logger.info("Creating VictronEnergy pairing agent")
-            agent = VEPasskeyAgent(self._bus, passkey="000000")
+            agent = VEPasskeyAgent(self._bus, passkey=passkey)
 
             if not d.pair():
                 logger.error("[%s] Pairing failed, rasing RuntimeError.", d.mac_address)
@@ -414,16 +413,16 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
         return d
 
 
-def read_nearest_vedevice(connect_duration_s: float = 5.0, query_duration_s: float = 20.0):
+def read_nearest_vedevice(discovery_duration: float = 5.0, query_duration: float = 20.0, passkey='000000', **kwargs):
     logger.info("Starting manager")
     manager = VEDeviceManager()
     manager.start()
 
     logger.info("Connecting to nearest VEDevice")
-    d = manager.connect_nearest_vedevice(connect_duration_s)
+    d = manager.connect_nearest_vedevice(discovery_duration, passkey=passkey)
 
     logger.info("Querying data from %s [%s]", d.alias(), d.mac_address)
-    timeout = time.time() + query_duration_s
+    timeout = time.time() + query_duration
     while d.is_connected() and time.time() < timeout:
         time.sleep(1)
 
@@ -431,22 +430,3 @@ def read_nearest_vedevice(connect_duration_s: float = 5.0, query_duration_s: flo
     logger.info("Querying finished.")
 
     return d.values
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        prog="smartsolar",
-        description="Connects to the Victron Energy device of nearest proximity via BLE and queries its values",
-    )
-    parser.add_argument("-v", "--verbose", help="increase output verbosity", action="count", default=0)
-    args = parser.parse_args()
-
-    # configure logging
-    logging_level = max(0, logging.WARNING - (10 * args.verbose))
-    logging.basicConfig(level=logging_level)
-    logger.debug("Logging level: %s", logging.getLevelName(logging_level))
-
-    # read values & print
-    values = read_nearest_vedevice()
-    print(values)
-    logger.info("Program finished.")
