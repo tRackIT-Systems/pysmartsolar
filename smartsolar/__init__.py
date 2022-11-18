@@ -4,13 +4,15 @@ import logging
 import argparse
 import time
 import threading
-import signal
 import io
 
 import gatt.gatt_linux as gatt
 import cbor2
 import dbus
 import dbus.service
+
+
+logger = logging.getLogger(__name__)
 
 
 def volts(data): return int.from_bytes(data, byteorder='little') * 0.01
@@ -39,7 +41,7 @@ class VEDevice(gatt.Device):
 
         class Values(dict):
             def __setitem__(self, key, value):
-                logging.info("[%s] updated %s: %s", device.mac_address, key, value)
+                logger.info("[%s] updated %s: %s", device.mac_address, key, value)
                 super().__setitem__(key, value)
 
         self.values = Values()
@@ -88,28 +90,28 @@ class VEDevice(gatt.Device):
             bytes.fromhex("0150"),
             bytes.fromhex("ec89"),
         ]:
-            logging.info("[%s] VREG %s ignored: %s", self.mac_address, vreg.hex(), data.hex() if isinstance(data, bytes) else data)
+            logger.info("[%s] VREG %s ignored: %s", self.mac_address, vreg.hex(), data.hex() if isinstance(data, bytes) else data)
         else:
-            logging.warning("[%s] VREG %s unknown: %s", self.mac_address, vreg.hex(), data.hex() if isinstance(data, bytes) else data)
+            logger.warning("[%s] VREG %s unknown: %s", self.mac_address, vreg.hex(), data.hex() if isinstance(data, bytes) else data)
 
     def connect_succeeded(self):
-        logging.info("[%s] connected", self.mac_address)
+        logger.info("[%s] connected", self.mac_address)
 
     def services_resolved(self):
-        logging.info("[%s] services resolved", self.mac_address)
+        logger.info("[%s] services resolved", self.mac_address)
         super().services_resolved()
 
         # print available services
         for _service in self.services:
             _service: gatt.Service
-            logging.debug("[%s] service %s", self.mac_address, _service.uuid)
+            logger.debug("[%s] service %s", self.mac_address, _service.uuid)
             for char in _service.characteristics:
                 char: gatt.Characteristic
-                logging.debug("[%s]  char %s", self.mac_address, char.uuid)
+                logger.debug("[%s]  char %s", self.mac_address, char.uuid)
 
         # get ATT service
         self.gatt_service = [s for s in self.services if s.uuid == VEDevice.GATT_SERVICE][0]
-        logging.info("[%s] got gatt service %s", self.mac_address, self.gatt_service.uuid)
+        logger.info("[%s] got gatt service %s", self.mac_address, self.gatt_service.uuid)
 
         # get ATT write char
         self.gatt_char0021 = [c for c in self.gatt_service.characteristics if c.uuid == VEDevice.GATT_CHAR0021][0]
@@ -118,10 +120,10 @@ class VEDevice(gatt.Device):
         self.gatt_char0024.enable_notifications()
         self.gatt_char0027 = [c for c in self.gatt_service.characteristics if c.uuid == VEDevice.GATT_CHAR0027][0]
         self.gatt_char0027.enable_notifications()
-        logging.info("[%s] got chars", self.mac_address)
+        logger.info("[%s] got chars", self.mac_address)
 
     def write_init(self):
-        logging.info("[%s] Writing init sequence", self.mac_address)
+        logger.info("[%s] Writing init sequence", self.mac_address)
         # self.gatt_char0021.write_value(bytes.fromhex('fa80ff'))
         # self.gatt_char0021.write_value(bytes.fromhex('f980'))
         # self.gatt_char0024.write_value(bytes.fromhex('01'))
@@ -254,16 +256,16 @@ class VEDevice(gatt.Device):
         self.gatt_char0021.write_value(bytes.fromhex('f941'))
 
     def write_ping(self):
-        logging.info("[%s] Writing ping", self.mac_address)
+        logger.info("[%s] Writing ping", self.mac_address)
         self.gatt_char0024.write_value(bytes.fromhex('0600821893421027'))
         # self.gatt_char0021.write_value(bytes.fromhex('f941'))
 
     def connect_failed(self, error):
-        logging.warning("[%s] connect failed: %s", self.mac_address, error)
+        logger.warning("[%s] connect failed: %s", self.mac_address, error)
         return super().connect_failed(error)
 
     def characteristic_value_updated(self, characteristic: gatt.Characteristic, value):
-        logging.debug("[%s] char %s value updated: %s", self.mac_address, characteristic.uuid, value.hex())
+        logger.debug("[%s] char %s value updated: %s", self.mac_address, characteristic.uuid, value.hex())
         fp = io.BytesIO(value)
         key = fp.read(3)
         while len(key):
@@ -282,29 +284,29 @@ class VEDevice(gatt.Device):
                         self.disconnect()
 
                 except cbor2.CBORDecodeEOF as error:
-                    logging.warning("[%s] VREG %s decode error: %s", self.mac_address, vreg.hex(), error)
+                    logger.warning("[%s] VREG %s decode error: %s", self.mac_address, vreg.hex(), error)
 
             elif key == b"\xf9\x01":
                 self.ack += 1
-                logging.debug("[%s] ack %s", self.mac_address, self.ack)
+                logger.debug("[%s] ack %s", self.mac_address, self.ack)
                 # if self.ack == 7:
                 #     self.write_ping()
             else:
-                logging.info("[%s] unknown value: %s", self.mac_address, key.hex())
+                logger.info("[%s] unknown value: %s", self.mac_address, key.hex())
 
             key = fp.read(3)
 
     def characteristic_read_value_failed(self, characteristic: gatt.Characteristic, error):
-        logging.warning("[%s] char %s read failed: %s", self.mac_address, characteristic.uuid, error)
+        logger.warning("[%s] char %s read failed: %s", self.mac_address, characteristic.uuid, error)
 
     def characteristic_write_value_succeeded(self, characteristic: gatt.Characteristic):
-        logging.debug("[%s] char %s write succeeded", self.mac_address, characteristic.uuid)
+        logger.debug("[%s] char %s write succeeded", self.mac_address, characteristic.uuid)
 
     def characteristic_write_value_failed(self, characteristic: gatt.Characteristic, error):
-        logging.warning("[%s] char %s write failed: %s", self.mac_address, characteristic.uuid, error)
+        logger.warning("[%s] char %s write failed: %s", self.mac_address, characteristic.uuid, error)
 
     def characteristic_enable_notifications_succeeded(self, characteristic: gatt.Characteristic):
-        logging.debug("[%s] char %s enable notifications succeeded", self.mac_address, characteristic.uuid)
+        logger.debug("[%s] char %s enable notifications succeeded", self.mac_address, characteristic.uuid)
 
         # count notification succeeds and init write if complete.
         self.gatt_chars_notify += 1
@@ -312,17 +314,17 @@ class VEDevice(gatt.Device):
             self.write_init()
 
     def characteristic_enable_notifications_failed(self, characteristic: gatt.Characteristic, error):
-        logging.warning("[%s] char %s enable notifications failed: %s", self.mac_address, characteristic.uuid, error)
+        logger.warning("[%s] char %s enable notifications failed: %s", self.mac_address, characteristic.uuid, error)
 
     def disconnect_succeeded(self):
         return super().disconnect_succeeded()
 
     def pair(self):
         if not self._properties.Get("org.bluez.Device1", "Trusted"):
-            logging.debug("[%s] Trusting device...", self.mac_address)
+            logger.debug("[%s] Trusting device...", self.mac_address)
             self._properties.Set("org.bluez.Device1", "Trusted", True)
 
-        logging.debug("[%s] Attempting to pair...", self.mac_address)
+        logger.debug("[%s] Attempting to pair...", self.mac_address)
         # Pair does not seem to get a reply, hence we dismiss the reply / error, and wait for pairing
         sem = threading.Semaphore(0)
         self._object.Pair(
@@ -332,7 +334,7 @@ class VEDevice(gatt.Device):
         sem.acquire()
 
         paired = self._properties.Get('org.bluez.Device1', 'Paired')
-        logging.debug("[%s] Paired: %s", self.mac_address, paired)
+        logger.debug("[%s] Paired: %s", self.mac_address, paired)
 
         return bool(paired)
 
@@ -350,7 +352,7 @@ class VEPasskeyAgent(dbus.service.Object):
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
     def RequestPasskey(self, device):
-        logging.debug("VEPasskeyAgent: Request passkey (%s): %s", device, self.passkey)
+        logger.debug("VEPasskeyAgent: Request passkey (%s): %s", device, self.passkey)
         return dbus.UInt32(self.passkey)
 
 
@@ -376,64 +378,59 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
                     continue
 
                 # add device
-                logging.info("[%s] Discovered VictronEnergy device \"%s\", RSSI: %s", d.mac_address, d.alias(), d._properties.Get('org.bluez.Device1', "RSSI"))
+                logger.info("[%s] Discovered VictronEnergy device \"%s\", RSSI: %s", d.mac_address, d.alias(), d._properties.Get('org.bluez.Device1', "RSSI"))
                 devices.append(d)
 
                 # print debug info
                 data = d._properties.GetAll('org.bluez.Device1')
                 for key, value in data.items():
-                    logging.debug("[%s]  %s: %s", d.mac_address, key, value)
+                    logger.debug("[%s]  %s: %s", d.mac_address, key, value)
 
             except dbus.exceptions.DBusException:
                 continue
 
         if len(devices) < 1:
-            logging.info("Did not discover any VictronEnergy devices...")
-            return None
+            raise RuntimeError("Did not discover any VictronEnergy devices...")
 
         d: gatt.Device = max(devices, key=lambda d: d._properties.Get('org.bluez.Device1', "RSSI"))
-        logging.info("[%s] Selected nearest device \"%s\"", d.mac_address, d.alias())
+        logger.info("[%s] Selected nearest device \"%s\"", d.mac_address, d.alias())
         d = VEDevice(d.mac_address, self, managed=True)
 
         # pair if not paired yet
         if not d._properties.Get('org.bluez.Device1', "Paired"):
             # register pairing agent
-            logging.info("Creating VictronEnergy pairing agent")
+            logger.info("Creating VictronEnergy pairing agent")
             agent = VEPasskeyAgent(self._bus, passkey="000000")
 
             if not d.pair():
-                logging.error("[%s] Pairing failed, rasing RuntimeError.", d.mac_address)
+                logger.error("[%s] Pairing failed, rasing RuntimeError.", d.mac_address)
                 raise RuntimeError("Pairing VictronEnergy Device '%s' [%s] failed.", d.alias(), d.mac_address)
             else:
-                logging.info("[%s] Pairing successful!", d.mac_address)
+                logger.info("[%s] Pairing successful!", d.mac_address)
 
-        logging.info("[%s] connecting", d.mac_address)
+        logger.info("[%s] connecting", d.mac_address)
         d.connect()
 
         return d
 
 
 def read_nearest_vedevice(connect_duration_s: float = 5.0, query_duration_s: float = 20.0):
-    logging.info("Starting manager")
+    logger.info("Starting manager")
     manager = VEDeviceManager()
     manager.start()
-    values = {}
 
-    logging.info("Connecting to nearest VEDevice")
+    logger.info("Connecting to nearest VEDevice")
     d = manager.connect_nearest_vedevice(connect_duration_s)
 
-    if d != None:
-        logging.info("Querying data from %s [%s]", d.alias(), d.mac_address)
-        timeout = time.time() + query_duration_s
-        while d.is_connected() and time.time() < timeout:
-            time.sleep(1)
-
-        values.update(d.values)
+    logger.info("Querying data from %s [%s]", d.alias(), d.mac_address)
+    timeout = time.time() + query_duration_s
+    while d.is_connected() and time.time() < timeout:
+        time.sleep(1)
 
     manager.stop()
-    logging.info("Querying finished.")
+    logger.info("Querying finished.")
 
-    return values
+    return d.values
 
 
 if __name__ == "__main__":
@@ -447,9 +444,9 @@ if __name__ == "__main__":
     # configure logging
     logging_level = max(0, logging.WARNING - (10 * args.verbose))
     logging.basicConfig(level=logging_level)
-    logging.debug("Logging level: %s", logging.getLevelName(logging_level))
+    logger.debug("Logging level: %s", logging.getLevelName(logging_level))
 
     # read values & print
     values = read_nearest_vedevice()
     print(values)
-    logging.info("Program finished.")
+    logger.info("Program finished.")
