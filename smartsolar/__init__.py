@@ -58,6 +58,8 @@ class VEDevice(gatt.Device):
             self.values["Uptime (s)"] = int.from_bytes(data, byteorder='little')
         elif vreg == bytes.fromhex("edad"):
             self.values["Load output actual current"] = amps(data)
+        elif vreg == bytes.fromhex("ed8d"):
+            self.values["Channel 1 voltage (V)"] = volts(data)
         elif vreg == bytes.fromhex("ed8f"):
             self.values["Channel 1 current (A)"] = amps(data)
         elif vreg == bytes.fromhex("eda8"):
@@ -385,6 +387,10 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
             except dbus.exceptions.DBusException:
                 continue
 
+        if len(devices) < 1:
+            logging.info("Did not discover any VictronEnergy devices...")
+            return None
+
         d: gatt.Device = max(devices, key=lambda d: d._properties.Get('org.bluez.Device1', "RSSI"))
         logging.info("[%s] Selected nearest device \"%s\"", d.mac_address, d.alias())
         d = VEDevice(d.mac_address, self, managed=True)
@@ -407,24 +413,27 @@ class VEDeviceManager(gatt.DeviceManager, threading.Thread):
         return d
 
 
-def read_nearest_vedevice(connect_duration_s: float = 5.0, query_duration_s: float = 15.0):
+def read_nearest_vedevice(connect_duration_s: float = 5.0, query_duration_s: float = 20.0):
     logging.info("Starting manager")
     manager = VEDeviceManager()
     manager.start()
+    values = {}
 
     logging.info("Connecting to nearest VEDevice")
     d = manager.connect_nearest_vedevice(connect_duration_s)
 
-    logging.info("Querying data from %s [%s]", d.alias(), d.mac_address)
-    timeout = time.time() + query_duration_s
-    while d.is_connected() and time.time() < timeout:
-        time.sleep(1)
+    if d != None:
+        logging.info("Querying data from %s [%s]", d.alias(), d.mac_address)
+        timeout = time.time() + query_duration_s
+        while d.is_connected() and time.time() < timeout:
+            time.sleep(1)
 
-    manager.stop_discovery()
+        values.update(d.values)
+
     manager.stop()
     logging.info("Querying finished.")
 
-    return d.values
+    return values
 
 
 if __name__ == "__main__":
