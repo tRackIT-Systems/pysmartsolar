@@ -419,14 +419,15 @@ def read_nearest_vedevice(discovery_duration: float = 5.0, query_duration: float
     manager.start()
 
     logger.info("Connecting to nearest VEDevice")
-    d = manager.connect_nearest_vedevice(discovery_duration, passkey=passkey)
+    try:
+        d = manager.connect_nearest_vedevice(discovery_duration, passkey=passkey)
 
-    logger.info("Querying data from %s [%s]", d.alias(), d.mac_address)
-    timeout = time.time() + query_duration
-    while d.is_connected() and time.time() < timeout:
-        time.sleep(1)
-
-    manager.stop()
-    logger.info("Querying finished.")
+        logger.info("Querying data from %s [%s]", d.alias(), d.mac_address)
+        timeout = time.time() + query_duration
+        while d.is_connected() and time.time() < timeout:
+            time.sleep(1)
+    finally:
+        manager.stop()
+        logger.info("Querying finished.")
 
     return d.values
