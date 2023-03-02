@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def volts(data): return int.from_bytes(data, byteorder='little') * 0.01
+def watts(data): return int.from_bytes(data, byteorder='little') * 0.01
 def amps(data): return int.from_bytes(data, byteorder='little') * 0.1
 def kelvin(data): return int.from_bytes(data, byteorder='little') * 0.01
 
@@ -73,6 +74,10 @@ class VEDevice(gatt.Device):
             self.values["Battery temperature (K)"] = kelvin(data)
         elif vreg == bytes.fromhex("ec66"):
             self.values["Mac address"] = ':'.join('%02x' % b for b in data)
+        elif vreg == bytes.fromhex("edbc"):
+            self.values["Input power (W)"] = watts(data)
+        elif vreg == bytes.fromhex("edbb"):
+            self.values["Input Voltage (V)"] = volts(data)
         elif vreg in [
             bytes.fromhex("9342"),
             bytes.fromhex("010d"),
@@ -88,6 +93,7 @@ class VEDevice(gatt.Device):
             bytes.fromhex("9041"),
             bytes.fromhex("0150"),
             bytes.fromhex("ec89"),
+            bytes.fromhex("ec8a"),
         ]:
             logger.info("[%s] VREG %s ignored: %s", self.mac_address, vreg.hex(), data.hex() if isinstance(data, bytes) else data)
         else:
