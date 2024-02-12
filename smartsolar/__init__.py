@@ -333,8 +333,8 @@ class VEDevice(gatt.Device):
         # Pair does not seem to get a reply, hence we dismiss the reply / error, and wait for pairing
         sem = threading.Semaphore(0)
 
-        def pairing_handler(response):
-            logger.debug("[%s] Response: %s", self.mac_address, response)
+        def pairing_handler(*args, **kwargs):
+            logger.debug("[%s] Response: %s, %s", self.mac_address, args, kwargs)
             sem.release()
 
         self._object.Pair(
